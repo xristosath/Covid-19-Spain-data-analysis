@@ -1,0 +1,734 @@
+#######################################################################
+## ΕΡΓΑΣΙΑ: COVID-19 Ισπανίας — Μαθηματικά Μοντέλα σε Λοιμώδη Νοσήματα
+## Κώδικας σε R 
+#######################################################################
+
+# Load libraries
+setwd("C:/Users/xrist/OneDrive - National and Kapodistrian University of Athens/ΜΜ ΛΝ/ergasia")
+library(ggplot2)
+library(EpiEstim)
+library(deSolve); library(reshape2)
+library(socialmixr); library(tidyr)
+
+ 
+data_full <- read.csv("Spaindata.csv")
+data_full$dateRep <- as.Date(data_full$dateRep, "%d/%m/%Y")
+data_full <- data_full[order(data_full$dateRep), ]
+N <- unique(data_full$popData2020)
+
+#### Question 1: epidemic Curve (days 1–15) ####
+data_15 <- data_full[1:15, ]
+ggplot(data_15, aes(dateRep, cases)) +
+  geom_col(fill="steelblue", alpha=0.7) +
+  geom_line(aes(y=cases), color="darkred", size=1) +
+  labs(title="Επιδημική Καμπύλη COVID-19 — Ισπανία (ημέρες 1–15)",
+       x="Ημερομηνία", y="Νέα Κρούσματα") +
+  theme_bw()
+
+#### Ερώτημα 2: Εκτίμηση Rt (Cori et al., Ganyani SI) ####
+t_start <- seq(2, 9)
+t_end <- t_start + 6 # adding 6 to get 7-day windows as bounds included in window
+res_Rt <- estimate_R(
+  incid = data_15$cases,
+  method = "parametric_si",
+  config = make_config(list(
+    mean_si = 4.7, std_si = 2.9,  # Ganyani et al. 2020
+    t_start = t_start, t_end = t_end
+  ))
+)
+# Εμφάνιση πίνακα και γραφήματος Rt
+print(res_Rt$R[,1:4])
+plot(res_Rt, legend=FALSE) + ggtitle("Rt (ημέρες 1–15)")
+plot(res_Rt,"R")
+head(res_Rt$R)
+#### Ερώτημα 3α–3δ: Baseline SEIR Προσομοίωση (0–120 ημέρες) ####
+
+# 3α. Παράμετροι SEIR
+R0_est <- round(res_Rt$R$`Mean(R)`[1],2)  # από πρώτο window
+gamma  <- 1/7       # διάρκεια μεταδοτικότητας 7 ημ.
+sigma  <- 1/4       # latent period 4 ημ.
+beta   <- R0_est * gamma
+params <- c(beta=beta,
+            sigma=sigma, #4 days latent period
+            gamma=gamma) #recovery rate = 1/duration of infectiousness (/day)
+
+# Αρχικές συνθήκες (E=10, I=0)
+initial_state_values <- c(S = N-10, # the whole population is susceptible to infection, except for 10 people
+                          E = 10,            # infected but not infectious
+                          I = 0,          # the epidemic starts with 100 infected people
+                          R = 0,            # no prior immunity
+                          C = 0)          # cumulative number of infections
+
+
+# 3β. Προσομοίωση SEIR
+times    <- seq(0, 120, by=1) # from 0 to 120 days with 1 time-increments per day
+seir_mod <- function(t, state, parms) {
+  with(as.list(c(state, parms)), {
+    Ntot <- S+E+I+R
+    lambda  <- beta*I/Ntot
+    dS <- -lambda*S
+    dE <-  lambda*S - sigma*E
+    dI <-  sigma*E - gamma*I
+    dR <-  gamma*I
+    dC <-  sigma*E
+    res=c(dS, dE, dI, dR, dC)
+    return(list(res))
+  })
+}
+out_seir <- ode(y=initial_state_values , 
+                times=times,
+                func=seir_mod,
+                parms=params)
+out_seir <- as.data.frame(out_seir)
+head(round(out_seir, digits=3))
+# Σχεδιασμός Exposed (E)
+ggplot(out_seir, aes(x=time, y=E)) +
+  geom_line(size=1) +
+  labs(title="3β. Exposed (E) — SEIR Baseline", x="Ημέρες", y="Άτομα") +
+  theme_bw()
+#Εκτίμηση του 4 στους 4 μήνες
+e_day120 <- out_seir[out_seir$time == 120, "E"]
+e_day120
+e_day50 <- out_seir[out_seir$time == 50, "E"]
+e_day50
+e_day80 <- out_seir[out_seir$time == 80, "E"]
+e_day80
+# 3γ. Cumulative % Infected
+out_seir$attackprcnt <- out_seir$C*100/N
+# Τελικός αριθμός μολύνσεων
+C_final <- out_seir$C[out_seir$time == 120]
+
+# Συνολικός πληθυσμός
+N <- unique(data_full$popData2020)
+
+# Ποσοστό
+pct_infected <- round(100 * C_final / N, 3)
+cat("Ποσοστό πληθυσμού που μολύνθηκε σε 4 μήνες:", pct_infected, "%\n")
+
+#Γράφημα για ποσοστό
+ggplot(out_seir, aes(time, attackprcnt)) +
+  geom_line(size=1) +
+  labs(title="3γ. Cumulative % Infected", x="Ημέρες", y="% Πληθυσμού") +
+  theme_bw()
+#Γράφημα για Αθροιστικό αριθμό μολύνσεων
+out_seir$attack <- out_seir$C
+round(out_seir$C[out_seir$time == 120], 1)
+ggplot(out_seir, aes(time, attack)) +
+  geom_line(size=1) +
+  labs(title="3γ. Cumulative Infected", x="Ημέρες", y=" Πληθυσμός") +
+  theme_bw()
+
+# 3δ. # estimate the final size of the epidemic
+library(rootSolve)
+
+equil <- runsteady(
+  y = initial_state_values,  # S, E, I, R, C
+  times = c(0, 1e5),          # μέχρι μεγάλο χρόνο ώστε να φτάσει ισορροπία
+  func = seir_mod, 
+  parms = params
+)
+
+# Προβολή αποτελεσμάτων
+round(equil$y, digits=3)
+
+
+#### Ερώτημα 4: SEIR με Κοινωνική Αποστασιοποίηση ####
+parametersSD <- c(beta = beta,   # infection rate (/day)
+                  sigma = 1/4,   # rate from E to I = 1/duration of latent phase (/day)
+                  gamma = gamma, # recovery rate = 1/duration of infectiousness (/day) 
+                  f = 0.4,      # reduction in beta due to social distancing
+                  tSD = 30)      # time at which social distancing is implemented
+# sequence of timesteps to solve the model at 
+times <- seq(from = 0, to = 120, by = 1) # from 0 to 120 days with 1 time-increments per day
+seir_sd = function(time, state, parms) {
+  
+  with(as.list(c(state, parms)), {
+    
+    betaSD <- beta*(1-f)     # reduced infection rate
+    N <- S + E + I + R       # total population size
+    lambda <- beta * I/N     # define lambda with no measures
+    lambdaSD <- betaSD * I/N # define lambda with social distancing 
+    
+    # define differential equations
+    if (time <= tSD){  # if time <= tSD days: no measures
+      dS <- - lambda * S
+      dE <- lambda * S - sigma * E
+      dI <- sigma * E - gamma * I
+      dR <- gamma * I 
+      dC <- sigma * E
+    }
+    else{              # if time > tSD days: social distancing
+      dS = - lambdaSD * S
+      dE = lambdaSD * S - sigma * E
+      dI = sigma * E -  gamma * I
+      dR = gamma * I
+      dC = sigma * E
+    }
+    res = c(dS, dE, dI, dR, dC) 
+    return(list(res))
+  })
+}
+out_sd <- ode(y=initial_state_values,
+              times=times,
+              func=seir_sd,
+              parms=parametersSD)
+out_sd <- as.data.frame(out_sd)
+out_sd
+head(round(out_sd, digits = 3))
+dfE <- pivot_longer(
+  data.frame(time=out_seir$time,
+             Baseline=out_seir$E,
+             Distancing=out_sd$E),
+  -time, names_to="Scenario", values_to="E")
+ggplot(dfE, aes(time, E, color=Scenario)) +
+  geom_line(size=1) +
+  labs(title="4. Μολυσμένοι με και χωρίς μέτρα αποστασιοποίησης", x="Ημέρες", y="E") +
+  theme_bw()
+
+#### Ερώτημα 5: Age-structured SEIR (2 ομάδες) ####
+# (ακολουθεί η υλοποίηση με socialmixr κ.λπ.)
+#### 5α πίνακας κοινωνικών επαφών ####
+contact_mat<- matrix(
+  c(18,5,1, # 0–17 → 0–17, 18–64, 65+
+    4,6,2, # 18–64 → 0–17, 18–64, 65+
+    1,2,2  # 65+ → 0–17, 18–64, 65+
+    ), nrow=3,
+  byrow= TRUE,
+  dimnames = list(
+  c("0–17","18–64","65+"),
+  c("0–17","18–64","65+")
+  )
+)
+contact_mat
+
+#### 5β προσομοίωση πανδημίας απουσία μέτρων για 4 μήνες ####
+#Φτιάχνουμε τα δημογραφικά
+N<-  unique(data_full$popData2020)
+N1 <- 0.20 * N   # παιδιά 0–17
+N2 <- 0.50 * N   # ενήλικες 18–64
+N3 <- 0.30 * N   # ηλικιωμένοι 65+
+N1+N2+N3
+#Αρχικές συνθήκες : μολύνωνται 5 παιδιά και 5 ενήλικες τη μέρα 0 στην Ε και κανείς ανοσία
+initial_state_values_grps<- c(
+  S1=N1-5, E1=5, I1=0, R1=0,
+  S2=N2-5, E2=5, I2=0, R2=0,
+  S3=N3, E3=0, I3=0, R3=0
+)
+
+parameters<- c(p=0.05, #prob μετάδοσης ανά επαφή
+               sigma=1/4,
+               gamma=gamma)
+# sequence of timesteps to solve the model at 
+times <- seq(from = 0, to = 4*30, by = 1) # from 0 to 120 days (4 months) in daily intervals
+# age-structured SEIR model function
+seir_mod_3grps<- function(time, state, parms) {
+  with(as.list(c(state, parms)), {
+    #calculate Nj
+    N1<- S1+E1+I1+R1
+    N2<-S2+E2+I2+R2
+    N3<-S3+E3+I3+R3
+    #ρυθμοί μόλυνσης
+    lambda1 <- p * (contact_mat[1,1]*I1/N1 +
+                   contact_mat[1,2]*I2/N2 +
+                   contact_mat[1,3]*I3/N3)
+    lambda2 <- p * (contact_mat[2,1]*I1/N1 +
+                   contact_mat[2,2]*I2/N2 +
+                   contact_mat[2,3]*I3/N3)
+    lambda3 <- p * (contact_mat[3,1]*I1/N1 +
+                   contact_mat[3,2]*I2/N2 +
+                   contact_mat[3,3]*I3/N3)
+    # define differential equations
+    # children
+    dS1<- -lambda1*S1
+    dE1<-lambda1*S1-sigma*E1
+    dI1<-sigma*E1-gamma*I1
+    dR1<-gamma*I1
+    #adults
+    dS2<- -lambda2*S2
+    dE2<- lambda2*S2-sigma*E2
+    dI2<- sigma*E2-gamma*I2
+    dR2<- gamma*I2
+    #elders
+    dS3<- -lambda3*S3
+    dE3<-lambda3*S3-sigma*E3
+    dI3<- sigma*E3-gamma*I3
+    dR3<- gamma*I3
+    result<-c(dS1,dE1,dI1,dR1,dS2,dE2,dI2,dR2,dS3,dE3,dI3,dR3)
+    return(list(result))
+  })
+}
+#solve the differential equations
+out_grps<-ode(y=initial_state_values_grps,
+              times=times,
+              func = seir_mod_3grps,
+              parms = parameters)
+out_grps<- as.data.frame(out_grps)
+out_grps
+head(round(out_grps, digits = 2))
+tail(round(out_grps, digits = 2))
+day60 <- out_grps[out_grps$time == 60, ]
+
+print(round(day60, 2))
+#Γραφική Απεικόνιση
+ggplot(out_grps, aes(x = time)) + 
+  geom_line(aes(y = I1, color = "children")) +
+  geom_line(aes(y = I2, color = "adults")) +
+  geom_line(aes(y = I3, color = "elders")) +
+  scale_color_manual(
+    values = c(children = "green", adults = "red", elders = "blue"),
+    name   = "Age group"
+  ) +
+  xlab("Time (days)") +
+  ylab("Daily number of infectious") +
+  theme_bw()
+
+#### Ερώτημα 6 Chain Binomial SIR Model####
+# Load necessary libraries
+library(R2OpenBUGS)  # Interface for OpenBUGS
+library(coda)  # MCMC diagnostics and analysis
+library(outbreaks)  # Epidemiological outbreak data
+library(incidence)  # For handling incidence data
+library(dplyr)
+library(ggplot2)  # For visualization
+#load data from ECDC for Spain COVID-19 pandemic
+data_full <- read.csv("Spaindata.csv",  header=TRUE, stringsAsFactors=FALSE)
+data_full$dateRep <- as.Date(data_full$dateRep, "%d/%m/%Y")
+data_full <- data_full[order(data_full$dateRep), ]
+#subset for dates from 1/9/20 to 20/6/21
+data<- data_full %>%
+  filter(dateRep>= as.Date("2020-09-01") & 
+           dateRep <= as.Date("2021-06-20"))
+#check for missing values
+any(is.na(data))
+colSums(is.na(data))
+#new cases
+new_cases<- data$cases
+lag_inf<- 7 #lag 7 days
+new_removals<- c(rep(0, lag_inf), head(new_cases, -lag_inf))
+
+#prepare data for OpenBugs model
+data_bugs<- list(
+  n_obs=length(new_cases),
+  n_pop= unique(data$popData2020),
+  new_cases=new_cases,
+  new_removals=new_removals
+)
+#Define Initial values for MCMC
+i0<-new_cases[1] #cases the 1st day
+inits <- function() {
+  list(beta = runif(1, 0.05, 0.07))  # Random initial value for beta
+}
+# Parameters to monitor during MCMC
+params <- c("beta")
+#Define the Chain Binomal Model for OpenBugs
+model_code<- "
+model {
+  S0 <- n_pop - i0  # Initial susceptible population (one initial case assumed)
+  I0<-i0
+  #t=1
+  p[1] <- 1 - exp(-(beta * I0 / n_pop))  # Infection probability at t=1
+  new_cases[1] ~ dbin(p[1], S0)  # Binomial likelihood for new cases at t=1
+  S[1] <- S0 - new_cases[1]  # Update susceptibles
+  I[1] <- I0 + new_cases[1] - new_removals[1]  # Update infected individuals
+  #t>=2
+  for (t in 2:n_obs) {
+    p[t] <- 1 - exp(-(beta * I[t-1] / n_pop))  # Infection probability at time t
+    new_cases[t] ~ dbin(p[t], S[t-1])  # Binomial likelihood for new cases
+    S[t] <- S[t-1] - new_cases[t]  # Update susceptibles
+    I[t] <- I[t-1] + new_cases[t] - new_removals[t]  # Update infected individuals
+  }
+  #prior for beta
+  beta ~ dlnorm(0, 5)  # Prior distribution for transmission rate beta
+}
+"
+# Save the model code to a text file for OpenBUGS
+model_file <- "chain_binomial_model.txt"
+writeLines(model_code, con = model_file)
+
+# Run MCMC in OpenBUGS
+mcmc_fit_bugs <- bugs(data = c(data_bugs, list(i0=i0)),
+                      inits = inits,
+                      parameters.to.save = params,
+                      model.file = model_file,
+                      n.chains = 3,  # Number of MCMC chains
+                      n.iter = 10500,  # Total iterations
+                      n.burnin = 1000,  # Burn-in period
+                      n.thin = 1,  # Thinning interval
+                      debug = TRUE)  # Run with debugging mode
+# Print MCMC summary results
+print(mcmc_fit_bugs, digits = 3)
+
+# Convert MCMC results to coda format for analysis
+mcmc_results <- as.mcmc.list(mcmc_fit_bugs)
+
+# Load bayesplot for visualization
+library(bayesplot)
+# Plot MCMC diagnostics
+mcmc_trace(mcmc_results, pars = "beta") + ggtitle("Trace Plot for Beta")  # Trace plot
+mcmc_dens(mcmc_results, pars = "beta") + ggtitle("Density Plot for Beta")  # Density plot
+mcmc_acf(mcmc_results, pars = "beta")  # Autocorrelation plot
+
+##### Ερώτημα 7 change-point Binomial SIR model####
+library(dplyr)
+library(R2OpenBUGS)  # Interface for OpenBUGS
+library(coda)  # MCMC diagnostics and analysis
+data_full <- read.csv("Spaindata.csv",  header=TRUE, stringsAsFactors=FALSE)
+data_full$dateRep <- as.Date(data_full$dateRep, "%d/%m/%Y")
+data_full <- data_full[order(data_full$dateRep), ]
+#subset for dates from 1/9/20 to 20/6/21
+data<- data_full %>%
+  filter(dateRep>= as.Date("2020-09-01") & 
+           dateRep <= as.Date("2021-06-20"))
+#check for missing values
+any(is.na(data))
+colSums(is.na(data))
+#new cases
+new_cases<- data$cases
+lag_inf<- 7 #lag 7 days
+new_removals<- c(rep(0, lag_inf), head(new_cases, -lag_inf))
+
+#let's asume change-point to be the 60th day
+t_change<-60
+#prepare data for OpenBugs model
+data_bugs<- list(
+  n_obs=length(new_cases),
+  n_pop= unique(data$popData2020),
+  new_cases=new_cases,
+  new_removals=new_removals,
+  i0=new_cases[1],
+  t_change=t_change
+)
+
+#initial values for MCMC
+initial_values<-function() { 
+  list(
+    beta1=runif(1,0.05,0.15),
+    beta2=runif(1,0.01,0.10)
+    )
+  }
+#parameters
+parameters_cp<-c("beta1","beta2")
+model_string <- "
+model {
+  S0 <- n_pop - i0
+  I0 <- i0
+
+  # t = 1
+  p[1] <- 1 - exp(-beta1 * I0 / n_pop)
+  new_cases[1] ~ dbin(p[1], S0)
+  S[1] <- S0 - new_cases[1]
+  I[1] <- I0 + new_cases[1] - new_removals[1]
+
+  # t ≥ 2 με change-point στο beta
+  for (t in 2:n_obs) {
+    beta_t[t] <- beta1 * step(t_change - t) +
+                 beta2 * step(t - t_change + 0.5)
+    p[t]      <- 1 - exp(-beta_t[t] * I[t-1] / n_pop)
+    new_cases[t] ~ dbin(p[t], S[t-1])
+    S[t] <- S[t-1] - new_cases[t]
+    I[t] <- I[t-1] + new_cases[t] - new_removals[t]
+  }
+
+  # priors
+  beta1 ~ dlnorm(0, 5)
+  beta2 ~ dlnorm(0, 5)
+}
+"
+
+model_file_cp<- "chainegpoint_chain_binomial_model.txt"
+writeLines(model_string, model_file_cp)
+# run OpenBUGS
+fit_cp <- bugs(
+  data               = data_bugs,
+  inits              = initial_values,
+  parameters.to.save = parameters_cp,
+  model.file         = model_file_cp,
+  n.chains           = 3,
+  n.iter             = 20000,
+  n.burnin           = 5000,
+  n.thin             = 10,
+  debug              = TRUE
+)
+# Εκτύπωση αποτελεσμάτων & diagnostics
+print(fit_cp, digits=3)
+mcmc_res_cp <- as.mcmc.list(fit_cp)
+
+# Trace, density & ACF plots για beta1 και beta2
+mcmc_trace(mcmc_res_cp, pars=c("beta1","beta2")) + ggtitle("Trace plots for β1, β2")
+mcmc_dens(mcmc_res_cp,  pars=c("beta1","beta2")) + ggtitle("Density plots for β1, β2")
+mcmc_acf(mcmc_res_cp,   pars=c("beta1","beta2"))       + ggtitle("ACF plots for β1, β2")
+
+##### Ερώτημα 8: Chain‐Binomial SIR με δύο change‐points #####
+
+# Φόρτωση βιβλιοθηκών
+library(readr);   library(dplyr)
+library(R2OpenBUGS)
+library(coda)
+library(ggplot2)
+
+# 1) Δεδομένα & pre–processing
+data_full <- read_csv("Spaindata.csv")
+data_full$dateRep <- as.Date(data_full$dateRep, "%d/%m/%Y")
+data_full <- arrange(data_full, dateRep)
+
+df <- filter(data_full,
+  dateRep >= as.Date("2020-09-01"),
+  dateRep <= as.Date("2021-06-20")
+)
+
+new_cases    <- df$cases
+lag_inf      <- 7
+new_removals <- c(rep(0, lag_inf), head(new_cases, -lag_inf))
+N            <- unique(df$popData2020)
+n_obs        <- length(new_cases)
+i0           <- new_cases[1]
+
+# 2) Ορίζουμε δύο σημεία αλλαγής
+t_cp1 <- 60   # 1st change point the 60th day
+t_cp2 <- 120  # 2nd change point the 120th day
+
+bugs_data <- list(
+  n_obs        = n_obs,
+  n_pop        = N,
+  new_cases    = new_cases,
+  new_removals = new_removals,
+  i0           = i0,
+  t_cp1        = t_cp1,
+  t_cp2        = t_cp2
+)
+
+# 3) Initial values for the βs
+inits_cp2 <- function(){
+  list(
+    beta1 = runif(1, 0.05, 0.15),
+    beta2 = runif(1, 0.03, 0.10),
+    beta3 = runif(1, 0.01, 0.08)
+  )
+}
+
+# 4) Παράμετροι που θέλουμε να παρακολουθήσουμε
+params_cp2 <- c("beta1", "beta2", "beta3")
+
+# 5) Ορισμός του μοντέλου OpenBUGS με δύο change‐points
+model_cp2 <- "
+model {
+  S0 <- n_pop - i0
+  I0 <- i0
+
+  # t = 1
+  p[1] <- 1 - exp(-beta1 * I0 / n_pop)
+  new_cases[1] ~ dbin(p[1], S0)
+  S[1] <- S0 - new_cases[1]
+  I[1] <- I0 + new_cases[1] - new_removals[1]
+
+  # t = 2,…,n_obs
+  for (t in 2:n_obs) {
+    beta_t[t] <-
+      beta1 * step(t_cp1 - t) +
+      beta2 * (step(t - t_cp1 + 0.5) - step(t - t_cp2 + 0.5)) +
+      beta3 * step(t - t_cp2 + 0.5)
+
+    p[t] <- 1 - exp(-beta_t[t] * I[t-1] / n_pop)
+    new_cases[t] ~ dbin(p[t], S[t-1])
+    S[t] <- S[t-1] - new_cases[t]
+    I[t] <- I[t-1] + new_cases[t] - new_removals[t]
+  }
+
+  # priors
+  beta1 ~ dlnorm(0, 5)
+  beta2 ~ dlnorm(0, 5)
+  beta3 ~ dlnorm(0, 5)
+}
+"
+writeLines(model_cp2, "chainbinomial_cp2.txt")
+
+# Κλήση OpenBUGS
+fit_cp2 <- bugs(
+  data               = bugs_data,
+  inits              = inits_cp2,
+  parameters.to.save = params_cp2,
+  model.file         = "chainbinomial_cp2.txt",
+  n.chains           = 3,
+  n.iter             = 20000,
+  n.burnin           = 5000,
+  n.thin             = 10,
+  debug              = TRUE
+)
+
+# Εκτύπωση & diagnostics
+print(fit_cp2, digits=3)
+mcmc_cp2 <- as.mcmc.list(fit_cp2)
+
+# Trace‐, density‐, ACF‐plots για τα beta1, beta2, beta3
+library(bayesplot)
+mcmc_trace(mcmc_cp2, pars = params_cp2) + ggtitle("Trace plots of β's")
+mcmc_dens(mcmc_cp2,  pars = params_cp2) + ggtitle("Density plots of β's")
+mcmc_acf(mcmc_cp2,   pars = params_cp2) + ggtitle("ACF plots of β's")
+
+
+#### Ερώτημα 9 – Chain-binomial SIR με βeta1/βeta2 & continuous change-point ####
+
+# libraries
+library(ggplot2)
+library(R2OpenBUGS)
+library(coda)
+
+# (2) load + prep data (1/9/20–20/6/21)
+data_full <- read.csv("Spaindata.csv", stringsAsFactors=FALSE)
+data_full$dateRep <- as.Date(data_full$dateRep, "%d/%m/%Y")
+data_full <- data_full[order(data_full$dateRep), ]
+data <- subset(data_full,
+               dateRep >= as.Date("2020-09-01") &
+                 dateRep <= as.Date("2021-06-20"))
+
+new_cases    <- data$cases
+lag_inf      <- 7
+new_removals <- c(rep(0,lag_inf), head(new_cases, -lag_inf))
+n_obs  <- length(new_cases)
+n_pop  <- unique(data$popData2020)
+i0     <- new_cases[1]
+
+# (3) bundle data for BUGS
+bugs_data_cp <- list(
+  n_obs       = n_obs,
+  n_pop       = n_pop,
+  new_cases   = new_cases,
+  new_removals= new_removals,
+  i0          = i0
+)
+
+# (4) initials (one per chain)
+inits_cp <- function(){
+  list(
+    beta1 = runif(1, 0.05, 0.2),
+    beta2 = runif(1, 0.01, 0.15),
+    tau   = runif(1, 2, n_obs-1)    # continuous; step() will handle branch
+  )
+}
+
+# (5) parameters to save
+params_cp <- c("beta1","beta2","tau")
+# (1) Build the model string
+model_string_cp <- "
+model {
+  # initial conditions
+  S0 <- n_pop - i0
+  I0 <- i0
+
+  # t = 1
+  beta_t[1] <- beta1
+  p[1]      <- 1 - exp(-beta_t[1] * I0 / n_pop)
+  new_cases[1] ~ dbin(p[1], S0)
+  S[1] <- S0 - new_cases[1]
+  I[1] <- I0 + new_cases[1] - new_removals[1]
+
+  # discrete uniform prior on change-point t_cp ∈ 2:(n_obs−1)
+  pi[1] <- 0
+  for (j in 2:(n_obs-1)) {
+    pi[j] <- 1 / (n_obs-2)
+  }
+  pi[n_obs] <- 0
+  t_cp ~ dcat(pi[])
+
+  # t = 2…n_obs, switch from beta1 to beta2 at t_cp
+  for (t in 2:n_obs) {
+    beta_t[t] <- beta1 * step(t_cp - t)
+               + beta2 * step(t - t_cp - 0.5)
+    p[t]      <- 1 - exp(-beta_t[t] * I[t-1] / n_pop)
+    new_cases[t] ~ dbin(p[t], S[t-1])
+    S[t] <- S[t-1] - new_cases[t]
+    I[t] <- I[t-1] + new_cases[t] - new_removals[t]
+  }
+
+  # priors
+  beta1 ~ dlnorm(0, 5)
+  beta2 ~ dlnorm(0, 5)
+}
+"
+
+# (2) Write it out to file
+writeLines(model_string_cp, "change_point_cb_model.txt")
+
+# (3) Run OpenBUGS
+library(R2OpenBUGS)
+fit_cp <- bugs(
+  data = list(
+    n_obs       = length(new_cases),
+    n_pop       = unique(data$popData2020),
+    new_cases   = new_cases,
+    new_removals= new_removals,
+    i0          = new_cases[1]
+  ),
+  inits = function() {
+    list(
+      beta1 = runif(1, 0.05, 0.15),
+      beta2 = runif(1, 0.01, 0.10)
+    )
+  },
+  parameters.to.save = c("beta1","beta2","t_cp"),
+  model.file         = "change_point_cb_model.txt",
+  n.chains           = 3,
+  n.iter             = 25000,
+  n.burnin           = 5000,
+  n.thin             = 2,
+  debug              = TRUE
+)
+
+print(fit_cp)
+
+library(bayesplot)
+mcmc_cp_new <- as.mcmc.list(fit_cp)
+mcmc_trace(mcmc_cp_new, pars = c("beta1","beta2","t_cp"),) + ggtitle("Trace plots of β's")
+mcmc_dens(mcmc_cp_new,  pars = c("beta1","beta2","t_cp"),) + ggtitle("Density plots of β's")
+mcmc_acf(mcmc_cp_new,   pars = c("beta1","beta2","t_cp"),) + ggtitle("ACF plots of β's")
+
+ggplot(data, aes(dateRep, cases)) + geom_line() 
+
+
+#####Ερώτημα 9 με STAN####
+setwd("C:/Users/xrist/OneDrive - National and Kapodistrian University of Athens/ΜΜ ΛΝ/ergasia")
+library(rstan)
+library(dplyr)
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+# 1) Φόρτωση & προεπεξεργασία δεδομένων
+df <- read.csv("Spaindata.csv", stringsAsFactors = FALSE) %>%
+  mutate(dateRep = as.Date(dateRep, "%d/%m/%Y")) %>%
+  filter(dateRep >= as.Date("2020-09-01"),  # Φιλτράρισμα ημερομηνιών
+         dateRep <= as.Date("2021-06-20")) %>%
+  arrange(dateRep)  # Ταξινόμηση με ημερομηνία
+
+# 2) Δημιουργία χρονικής μεταβλητής (ts) που ξεκινάει από 0
+ts <- as.numeric(difftime(df$dateRep, df$dateRep[1], units = "days"))
+
+# 3) Δεδομένα για Stan
+stan_data <- list(
+  N_obs = nrow(df),
+  new_cases = df$cases,
+  ts = ts,
+  N_pop = unique(df$popData2020),
+  x_r = array(unique(df$popData2020), dim = 1),  # Πίνακας 1x1
+  x_i = integer(0)
+)
+
+# 4) Έλεγχος για NA ή λάθη
+print(paste("N_obs =", stan_data$N_obs))          # Πρέπει να είναι 293
+print(paste("N_pop =", stan_data$N_pop))          # Πληθυσμός Ισπανίας (~47.3M)
+print(summary(stan_data$new_cases))               # Χωρίς NA/αρνητικές τιμές
+
+# 5) Compile και εκτέλεση
+mod_cp <- stan_model("change_point_sir.stan")
+fit_cp <- sampling(
+  mod_cp,
+  data = stan_data,
+  chains = 1,,
+  iter = 1000,
+  init = "random",
+  control= list(adapt_delta=0.9, max_treedepth=15),
+  verbose=TRUE
+)
+print(fit_cp, pars=c("beta1","beta2","gamma","phi","t_cp","R0_before","R0_after"))
+
+mcmc_trace(fit_cp, pars=c("beta1","beta2","t_cp","gamma"))
+mcmc_dens(fit_cp,  pars=c("R0_before","R0_after"))

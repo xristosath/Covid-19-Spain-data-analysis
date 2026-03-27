@@ -1,7 +1,30 @@
-#######################################################################
-## PROJECT: COVID-19 Spain — Mathematical Models in Infectious Diseases
-## R Code 
-#######################################################################
+################################################################################
+## Script Name: Covid-19-Spain-data-analysis.R
+##
+## Purpose:     Infectious Disease Modeling of the COVID-19 Pandemic using 
+##              Compartmental Models (Spain data). The script develops and 
+##              simulates a series of mathematical models to analyze the COVID-19 
+##              epidemic trajectory using real-world data from the ECDC.
+##
+## Objectives:  - Estimate the time-varying effective reproduction number (Rt) 
+##                using the Cori et al. methodology.
+##              - Build and calibrate a baseline SEIR model.
+##              - Conduct scenario analysis evaluating the impact of social 
+##                distancing measures.
+##              - Develop an age-structured model based on a social contact 
+##                matrix to simulate transmission across different age groups.
+##              - Implement advanced models to identify unknown changepoints in 
+##                the transmission rate.
+##
+## Author:      Christos Athanasakopoulos xristos.athanasa@gmail.com
+## Affiliation: MSc in Biostatistics and Health Data Science, 
+##              National and Kapodistrian University of Athens (NKUA)
+## Date:        March 2025
+##
+## Key Skills:  Infectious Disease Modeling, SEIR Models, Age-Structured Modeling, 
+##              Parameter Estimation (Rt), Scenario Analysis, Changepoint Detection, 
+##              Simulation, R Programming.
+################################################################################
 
 # Load libraries
 setwd("C:/Users/xrist/OneDrive - National and Kapodistrian University of Athens/ΜΜ ΛΝ/ergasia")
